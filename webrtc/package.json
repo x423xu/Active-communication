@@ -1,0 +1,9 @@
+{
+    "name": "webrtc-tcp-hello",
+    "version": "1.0.0",
+    "main": "server.js",
+    "dependencies": {
+        "werift": "0.22.2",
+        "ws": "^8.18.0"
+    }
+}

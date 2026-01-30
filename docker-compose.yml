@@ -1,0 +1,19 @@
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn_tcp
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    restart: unless-stopped
+
+  webrtc:
+    build: ./webrtc
+    container_name: webrtc_tcp_server
+    network_mode: host
+    environment:
+      - TURN_HOST=10.37.0.225
+      - TURN_USER=test
+      - TURN_PASS=test123
+    restart: unless-stopped
