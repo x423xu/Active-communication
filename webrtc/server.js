@@ -15,6 +15,9 @@ const iceServers = [
     },
 ];
 
+process.on("uncaughtException", (err) => console.error("[FATAL] uncaughtException:", err));
+process.on("unhandledRejection", (err) => console.error("[FATAL] unhandledRejection:", err));
+
 function subscribeIfPresent(obj, fieldName, cb) {
     const ev = obj && obj[fieldName];
     if (ev && typeof ev.subscribe === "function") {
@@ -25,9 +28,6 @@ function subscribeIfPresent(obj, fieldName, cb) {
     console.log(`[RTC] ${fieldName} not available`);
     return false;
 }
-
-process.on("uncaughtException", (err) => console.error("[FATAL] uncaughtException:", err));
-process.on("unhandledRejection", (err) => console.error("[FATAL] unhandledRejection:", err));
 
 const wss = new WebSocket.Server({ port: WS_PORT }, () => {
     console.log(`[WS] listening on :${WS_PORT}`);
@@ -56,71 +56,78 @@ wss.on("connection", (ws) => {
             if (msg.type === "offer") {
                 pc = new RTCPeerConnection({ iceServers });
 
-                // Send ICE candidates server -> browser (browser-friendly JSON)
+                // ---- IMPORTANT: create a video transceiver in sendrecv mode ----
+                // We will receive RTP from browser, then echo RTP back out.
+                const videoTransceiver = pc.addTransceiver("video", "sendrecv");
+
+                // When track arrives, forward RTP back to the same transceiver.
+                videoTransceiver.onTrack.subscribe((track, transceiver) => {
+                    console.log("[RTC] got video track, ssrc=", track.ssrc);
+
+
+                    let inPkts = 0;
+                    let outPkts = 0;
+
+                    setInterval(() => {
+                        console.log(`[RTP] in=${inPkts}/s out=${outPkts}/s ssrc=${track.ssrc}`);
+                        inPkts = 0;
+                        outPkts = 0;
+                    }, 1000);
+
+                    track.onReceiveRtp.subscribe((rtp) => {
+                        inPkts++;
+                        try {
+                            transceiver.sendRtp(rtp);
+                            outPkts++;
+                        } catch (e) {
+                            console.log("[RTP] sendRtp error:", e?.message || e);
+                        }
+                    });
+                });
+
+                // Server -> client ICE candidates (browser-compatible)
                 subscribeIfPresent(pc, "onIceCandidate", (c) => {
                     if (!c) return;
                     const init = (typeof c.toJSON === "function") ? c.toJSON() : c;
                     ws.send(JSON.stringify({ type: "candidate", candidate: init }));
                 });
 
-                // DataChannel handler
-                subscribeIfPresent(pc, "onDataChannel", (dc) => {
-                    console.log("[DC] label:", dc.label);
-
-                    subscribeIfPresent(dc, "onOpen", () => console.log("[DC] open"));
-
-                    subscribeIfPresent(dc, "onMessage", (data) => {
-                        const text = data.toString();
-                        console.log("[DC] recv:", text);
-                        dc.send("OK");
-                    });
-                });
-
-                // State logs (optional)
+                // Optional logs
                 subscribeIfPresent(pc, "iceConnectionStateChange", (s) => console.log("[RTC] iceConnectionState:", s));
                 subscribeIfPresent(pc, "connectionStateChange", (s) => console.log("[RTC] connectionState:", s));
 
-                // Set remote description ASAP
+                // Apply offer
                 await pc.setRemoteDescription(msg.offer);
                 remoteDescSet = true;
 
-                // Flush any early candidates
+                // Flush early candidates (if any)
                 if (pendingCandidates.length > 0) {
                     console.log(`[RTC] flushing ${pendingCandidates.length} early candidates`);
                     for (const c of pendingCandidates) {
-                        try {
-                            await pc.addIceCandidate(c);
-                        } catch (e) {
-                            console.log("[RTC] addIceCandidate (early) failed:", e?.message || e);
+                        try { await pc.addIceCandidate(c); } catch (e) {
+                            console.log("[RTC] addIceCandidate(early) failed:", e?.message || e);
                         }
                     }
                     pendingCandidates = [];
                 }
 
-                // Create + send answer ASAP
+                // Create + send answer
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 ws.send(JSON.stringify({ type: "answer", answer }));
                 console.log("[RTC] sent answer");
-
                 return;
             }
 
             if (msg.type === "candidate") {
                 if (!pc) {
-                    // Candidate arrived before offer (rare but possible)
                     pendingCandidates.push(msg.candidate);
-                    console.log("[RTC] buffered candidate (no pc yet)");
                     return;
                 }
-
                 if (!remoteDescSet) {
-                    // Candidate arrived before setRemoteDescription finished
                     pendingCandidates.push(msg.candidate);
-                    console.log("[RTC] buffered candidate (remote desc not set)");
                     return;
                 }
-
                 try {
                     await pc.addIceCandidate(msg.candidate);
                 } catch (e) {
@@ -133,7 +140,7 @@ wss.on("connection", (ws) => {
         }
     });
 
-    // Keepalive ping (VPN/proxy friendliness)
+    // Keepalive ping (helps with VPN/proxies)
     const t = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.ping();
     }, 15000);
