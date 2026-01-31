@@ -8,12 +8,24 @@ services:
     command: ["-c", "/etc/coturn/turnserver.conf"]
     restart: unless-stopped
 
+  ffgs:
+    build: ./ffgs
+    container_name: ffgs
+    network_mode: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${FFGS_GPUS}
+      - SNAPSHOT_PERIOD_SEC=${SNAPSHOT_PERIOD_SEC}
+    restart: unless-stopped
+
   webrtc:
     build: ./webrtc
     container_name: webrtc_tcp_server
     network_mode: host
+    depends_on: [ffgs, coturn]
     environment:
-      - TURN_HOST=10.37.0.225
-      - TURN_USER=test
-      - TURN_PASS=test123
+      - TURN_HOST=${TURN_HOST}
+      - TURN_USER=${TURN_USER}
+      - TURN_PASS=${TURN_PASS}
+      - FFGS_WS=${FFGS_WS}
+      - SNAPSHOT_PERIOD_SEC=${SNAPSHOT_PERIOD_SEC}
     restart: unless-stopped
